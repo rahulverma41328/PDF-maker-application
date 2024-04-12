@@ -52,4 +52,5 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
     implementation("com.itextpdf:itextg:5.5.10")
    // implementation("com.pspdfkit:pspdfkit:2024.1.2")
+    implementation ("com.github.bumptech.glide:glide:4.16.0")
 }

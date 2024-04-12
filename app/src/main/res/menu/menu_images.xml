@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item android:id="@+id/image_item_delete"
+        android:icon="@drawable/delete"
+        app:showAsAction="always"
+        android:title="Delete"/>
+
+    <!-- images_item.pdf: convert selected or all images to pdf-->
+
+    <item android:id="@+id/images_item_pdf"
+        android:title="Convert To Pdf"
+        app:showAsAction="always"
+        android:icon="@drawable/dots_vertical"/>
+</menu>

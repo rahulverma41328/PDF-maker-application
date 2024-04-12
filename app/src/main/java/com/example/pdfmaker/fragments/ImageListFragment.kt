@@ -1,32 +1,49 @@
 package com.example.pdfmaker.fragments
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.app.ProgressDialog
 import android.content.ContentValues
 import android.content.Context
+import android.content.DialogInterface
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.ImageDecoder
+import android.graphics.Paint
+import android.graphics.pdf.PdfDocument
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.Menu
+import android.view.MenuInflater
+import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import android.widget.PopupMenu
+import android.widget.ProgressBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
+import androidx.recyclerview.widget.RecyclerView
 import com.example.pdfmaker.Constants
 import com.example.pdfmaker.R
+import com.example.pdfmaker.adapter.AdapterImage
 import com.example.pdfmaker.databinding.FragmentImageListBinding
+import com.example.pdfmaker.getset.ModelImages
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class ImageListFragment:Fragment(R.layout.fragment_image_list){
 
@@ -38,8 +55,10 @@ class ImageListFragment:Fragment(R.layout.fragment_image_list){
     private lateinit var storagePermission: Array<String>
     private val CAMERA_REQUEST_CODE = 101
     private val STORAGE_REQUEST_CODE = 100
-    private lateinit var addImageFab:FloatingActionButton
-
+    private lateinit var imagesRv:RecyclerView
+    private lateinit var allImageArrayList:ArrayList<ModelImages>
+    private lateinit var adapterImage:AdapterImage
+    private lateinit var progressDialog: ProgressDialog
     // Uri of the image picked
     private var imageUri: Uri? = null
     override fun onAttach(context: Context) {
@@ -53,6 +72,7 @@ class ImageListFragment:Fragment(R.layout.fragment_image_list){
         savedInstanceState: Bundle?
     ): View {
         binding = FragmentImageListBinding.inflate(inflater)
+        imagesRv = binding.imageRv
         return binding.root
     }
 
@@ -65,7 +85,228 @@ class ImageListFragment:Fragment(R.layout.fragment_image_list){
             binding.addImageFab.setOnClickListener {
             showInputImageDialog()
         }
+        allImageArrayList = arrayListOf()
+        adapterImage = AdapterImage(requireContext(),allImageArrayList)
+        progressDialog = ProgressDialog(requireContext())
+        progressDialog.setTitle("Please wait")
+        progressDialog.setCanceledOnTouchOutside(false)
+        loadImages()
 
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        setHasOptionsMenu(true)
+    }
+
+    override fun onCreateOptionsMenu(menu: Menu, inflater: MenuInflater) {
+        inflater.inflate(R.menu.menu_images,menu)
+        super.onCreateOptionsMenu(menu, inflater)
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        val itemId:Int = item.itemId
+        if (itemId == R.id.image_item_delete){
+            val builder = AlertDialog.Builder(requireContext())
+            builder.setTitle("Delete Images")
+                .setMessage("Are you sure you want to delete all/selected images?")
+                .setPositiveButton("Delete All", DialogInterface.OnClickListener { dialog, which ->
+
+                })
+                .setNeutralButton("Delete Selected", DialogInterface.OnClickListener { dialog, which ->
+                    // delete selected clicked, delete only selected images from list
+                    deleteImages(false)
+                })
+                .setNegativeButton("Cancel", DialogInterface.OnClickListener { dialog, which ->
+                    // cancel clicked , dismiss dialog
+                    dialog.dismiss()
+                })
+                .show()
+        }
+        else if(itemId == R.id.images_item_pdf){
+            val builder = AlertDialog.Builder(requireContext())
+            builder.setTitle("Convert to PDF")
+                .setMessage("Convert All/Selected Images to PDF")
+                .setPositiveButton("CONVERT ALL",DialogInterface.OnClickListener { dialog, which ->
+                    // convert all dialog button clicked, convert all images to pdf
+                    convertImagesToPdf(true)
+                })
+                .setNeutralButton("CONVERT SELECTED",DialogInterface.OnClickListener { dialog, which ->
+                    // convert selected dialog button clicked, convert only selected images to pdf
+                    convertImagesToPdf(false)
+                })
+                .setNegativeButton("CANCEL",DialogInterface.OnClickListener { dialog, which ->
+                    // cancel dialog clicked, dismiss dialog
+                    dialog.dismiss()
+
+                }).show()
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
+    private fun convertImagesToPdf(convertAll:Boolean){
+        Log.d(TAG,"convertImagesToPdf: convertAll $convertAll")
+
+        progressDialog.setMessage("Converting to PDF...")
+        progressDialog.show()
+
+        val executorService:ExecutorService = Executors.newSingleThreadExecutor()
+        val handler = Handler(Looper.getMainLooper())
+
+        executorService.execute {
+            Log.d(TAG,"run: BG work start...")
+            var imagesToPdfList:ArrayList<ModelImages> = arrayListOf()
+            if (convertAll){
+                imagesToPdfList = allImageArrayList
+            }
+            else{
+                // convert the selected images only,add selected images to imagesToPdfList
+                for (i in allImageArrayList.indices){
+                    if (allImageArrayList.get(i).checked){
+                        imagesToPdfList.add(allImageArrayList[i])
+                    }
+                }
+            }
+            Log.d(TAG,"run: imagesToPdfList size: $imagesToPdfList")
+            try {
+                val root:File = File(requireContext().getExternalFilesDir(null),Constants.PDF_FOLDER)
+                root.mkdirs()
+
+                //2) Name with extension of the image
+                val timestamp = System.currentTimeMillis()
+                val fileName:String = "PDF_$timestamp$.pdf"
+
+                Log.d(TAG,"run: fileName: $fileName")
+
+                val file = File(root,fileName)
+
+                val fileOutputStream = FileOutputStream(file)
+                val pdfDocument = PdfDocument()
+
+                for (i in imagesToPdfList.indices){
+                    // hry uri of the image that will be added to PDF as PDF page
+                    val imageToAdInPdfUri = imagesToPdfList.get(i).imageUri
+                    // get bitmap
+                    val bitmap:Bitmap
+                    try {
+                        //get bitmap using new API for android P (28) and above
+                        if (Build.VERSION.SDK_INT>=Build.VERSION_CODES.P){
+                            bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(requireContext().contentResolver,imageToAdInPdfUri))
+                        }
+                        else{
+                            // get bitmap in android devices below Android P (28)
+                            bitmap = MediaStore.Images.Media.getBitmap(requireContext().contentResolver,imageToAdInPdfUri)
+                        }
+                        // to resolve "IllegalArgumentException: Software rendering doesn't support hardware bitmaps"
+                        var bitmap = bitmap.copy(Bitmap.Config.ARGB_8888,false)
+
+                        // Setup Pdf Page info e.g page height, page width, page number, Since value of i will starts from 0 so we will do i+1
+                        val pageInfo:PdfDocument.PageInfo = PdfDocument.PageInfo.Builder(bitmap.width,bitmap.height,i+1).create()
+
+                        //create pdf page
+                        val page:PdfDocument.Page = pdfDocument.startPage(pageInfo)
+
+                        // for page color
+                        val paint:Paint = Paint()
+                        paint.setColor(Color.WHITE)
+
+                        // setup canvas with bitmap to add in pdf page
+                        val canvas = page.canvas
+                        canvas.drawPaint(paint)
+                        canvas.drawBitmap(bitmap,0f,0f,null)
+
+                        //finish the page
+                        pdfDocument.finishPage(page)
+                        // if you want to free memory ASAP you should call recycle() just before decoding the second bitmap
+                        bitmap.recycle()
+                    }
+                    catch (e:Exception){
+
+                        Log.d(TAG,"run: $e")
+                    }
+                }
+
+                pdfDocument.writeTo(fileOutputStream)
+                pdfDocument.close()
+            }
+            catch (e:Exception){
+                progressDialog.dismiss()
+                Log.d(TAG,"run: $e")
+            }
+
+            handler.post {
+                Log.d(TAG,"run: Converted...")
+                progressDialog.dismiss()
+                Toast.makeText(requireContext(),"Converted...",Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    private fun deleteImages(deleteAll:Boolean){
+        var imagesToDeleteList:ArrayList<ModelImages> = arrayListOf()
+        if (deleteAll){
+            imagesToDeleteList = allImageArrayList
+        }
+        else{
+            for (i in allImageArrayList.indices){
+                if (allImageArrayList[i].checked){
+                    imagesToDeleteList.add(allImageArrayList[i])
+                }
+            }
+        }
+        for (i in imagesToDeleteList.indices){
+
+            try {
+                val pathOfImageToDelete = imagesToDeleteList[i].imageUri.path
+                val file = File(pathOfImageToDelete)
+                if (file.exists()){
+                    // delete file and get result as true/false
+                    val isDeleted:Boolean = file.delete()
+                    // show in log
+                    Log.d(TAG,"deleted: isDeleted $isDeleted")
+                }
+
+            }
+            catch (e:Exception){
+                Log.d(TAG,"deletedImages: $e")
+            }
+        }
+        Toast.makeText(requireContext(),"Deleted",Toast.LENGTH_LONG).show()
+        // all or selected images are deleted, reload images
+        loadImages()
+    }
+    private fun loadImages() {
+        Log.d(TAG,"loadImages: ")
+
+        val folder = File(requireContext().getExternalFilesDir(null),Constants.IMAGE_FOLDER)
+        imagesRv.adapter = adapterImage
+
+        if (folder.exists()){
+            // folder exists , try to load files from it
+            Log.d(TAG,"loadImages: folder exists")
+            val files = folder.listFiles()
+            if (files!=null){
+                // files exists, lets load them
+                Log.d(TAG,"loadImages: Folder exists and have images")
+
+                for (file:File in files){
+                    Log.d(TAG,"loadImages: ${file.name}")
+                    // get uri of the image, which we need to pass in mode
+                    val imageUri = Uri.fromFile(file)
+                    // create new instance of model and pass imageUri we just got
+                    val modelImage = ModelImages(imageUri,false)
+                    // add model to arraylist allImageArrayList
+                    allImageArrayList.add(modelImage)
+                    adapterImage.notifyItemInserted(allImageArrayList.size)
+                }
+            }
+            else{
+                Log.d(TAG,"loadImages: Folder exists but empty")
+            }
+        }
+        else{
+            Log.d(TAG,"loadImages: Folder dosen't exists")
+        }
     }
 
     private fun pickImageGallery(){
@@ -80,8 +321,14 @@ class ImageListFragment:Fragment(R.layout.fragment_image_list){
         if ( result.resultCode == Activity.RESULT_OK){
             val mData =  result.data?: return@registerForActivityResult
             imageUri = mData.data
-            Log.d(TAG,"onActivityResult: Picked image gallery: ${imageUri}")
+            Log.d(TAG,"onActivityResult: Picked image gallery: $imageUri")
             imageUri?.let { saveImageToAppLevelDirectory(it) }
+
+            val modelImage = imageUri?.let { ModelImages(it,false) }
+            if (modelImage != null) {
+                allImageArrayList.add(modelImage)
+            }
+            adapterImage.notifyItemInserted(allImageArrayList.size)
         }
         else{
             // Cancelled
@@ -108,7 +355,7 @@ class ImageListFragment:Fragment(R.layout.fragment_image_list){
             // image is taken form camera
             // we already have the image in imageUri using function pickImageCamera()
             // save the picked image
-            Log.d(TAG,"onActivityResult: Picked image camera: ${imageUri}")
+            Log.d(TAG,"onActivityResult: Picked image camera: $imageUri")
             imageUri?.let { saveImageToAppLevelDirectory(it) }
         }
         else{
